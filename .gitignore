@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+
+# Local credentials and runtime state
+.env
+estado_alertas.json
+energia_loop.log
+*.log
+
+# Generated operational outputs
+logs_energia_procesados.xlsx
+
+# Local/business data files kept out of Git by default
+*.xlsx
+*.xls
+*.xlsm
+*.pbix
+
+# Editor/OS noise
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
