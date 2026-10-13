@@ -28,7 +28,9 @@ $ProjectDir = $PSScriptRoot
 $VenvPython = Join-Path $ProjectDir ".venv\Scripts\python.exe"
 $Script     = Join-Path $ProjectDir "paso1_filtrar_y_ordenar.py"
 $EnvFile    = Join-Path $ProjectDir ".env"
-$Catalogo   = Join-Path $ProjectDir "Logs de energía.xlsx"
+# [char]0x00ED = "i" con tilde. Se construye asi para que el script sea ASCII puro:
+# Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI y rompe los acentos.
+$Catalogo   = Join-Path $ProjectDir ("Logs de energ" + [char]0x00ED + "a.xlsx")
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
