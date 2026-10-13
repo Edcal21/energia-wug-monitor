@@ -68,12 +68,17 @@ if (-not (Test-Path $EnvFile)) {
     Write-Warning "Se creo .env. Llena WUG_USER/WUG_PASS (o WUG_COOKIE) y los canales de alerta, luego vuelve a ejecutar deploy.ps1."
     return
 }
-$envText = Get-Content $EnvFile -Raw
-$hasAuth = ($envText -match '(?m)^WUG_COOKIE=\S') -or
-           (($envText -match '(?m)^WUG_USER=\S') -and ($envText -match '(?m)^WUG_PASS=\S'))
-if (-not $hasAuth) { throw ".env sin credenciales WUG (WUG_USER+WUG_PASS o WUG_COOKIE)." }
-$hasTelegram = ($envText -match '(?m)^TELEGRAM_BOT_TOKEN=\S') -and ($envText -match '(?m)^TELEGRAM_CHAT_ID=\S')
-$hasTeams    = ($envText -match '(?m)^TEAMS_WEBHOOK_URL=\S')
+# Lee el .env linea por linea (tolera BOM, espacios y finales de linea CR/LF/CRLF).
+$cfg = @{}
+foreach ($line in (Get-Content $EnvFile)) {
+    $l = $line.Trim([char]0xFEFF).Trim()
+    if ($l -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') { $cfg[$Matches[1]] = $Matches[2].Trim() }
+}
+function Has($k) { return ($cfg.ContainsKey($k) -and $cfg[$k] -ne '') }
+$hasAuth = (Has 'WUG_COOKIE') -or ((Has 'WUG_USER') -and (Has 'WUG_PASS'))
+if (-not $hasAuth) { throw ".env sin credenciales WUG (WUG_USER+WUG_PASS o WUG_COOKIE). Claves leidas: $($cfg.Keys -join ', ')" }
+$hasTelegram = (Has 'TELEGRAM_BOT_TOKEN') -and (Has 'TELEGRAM_CHAT_ID')
+$hasTeams    = Has 'TEAMS_WEBHOOK_URL'
 if ($SinAlertas) {
     Write-Warning "Modo -SinAlertas: el monitor generara el Excel pero NO avisara a nadie."
 } elseif (-not ($hasTelegram -or $hasTeams)) {
