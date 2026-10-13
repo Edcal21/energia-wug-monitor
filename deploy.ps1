@@ -58,8 +58,11 @@ if ($LASTEXITCODE -ne 0) { throw "Fallo la instalacion de dependencias." }
 Step "Verificando configuracion"
 if (-not (Test-Path $EnvFile)) {
     Copy-Item (Join-Path $ProjectDir ".env.example") $EnvFile
-    # Restringe el .env (contiene credenciales) al usuario actual y administradores.
-    icacls $EnvFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" "Administrators:(F)" | Out-Null
+    # Restringe el .env (contiene credenciales). Se usan SID porque los nombres de grupo
+    # dependen del idioma de Windows ("Administrators" vs "Administradores").
+    # SYSTEM (S-1-5-18) debe poder leerlo: es la cuenta con la que corre la tarea.
+    icacls $EnvFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "No se pudieron aplicar permisos a .env" }
     Write-Warning "Se creo .env. Llena WUG_USER/WUG_PASS (o WUG_COOKIE) y los canales de alerta, luego vuelve a ejecutar deploy.ps1."
     return
 }
