@@ -70,6 +70,11 @@ $envText = Get-Content $EnvFile -Raw
 $hasAuth = ($envText -match '(?m)^WUG_COOKIE=\S') -or
            (($envText -match '(?m)^WUG_USER=\S') -and ($envText -match '(?m)^WUG_PASS=\S'))
 if (-not $hasAuth) { throw ".env sin credenciales WUG (WUG_USER+WUG_PASS o WUG_COOKIE)." }
+$hasTelegram = ($envText -match '(?m)^TELEGRAM_BOT_TOKEN=\S') -and ($envText -match '(?m)^TELEGRAM_CHAT_ID=\S')
+$hasTeams    = ($envText -match '(?m)^TEAMS_WEBHOOK_URL=\S')
+if (-not ($hasTelegram -or $hasTeams)) {
+    throw ".env sin canal de alertas (TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID o TEAMS_WEBHOOK_URL). Sin canal el monitor correria pero nunca avisaria."
+}
 if (-not (Test-Path $Catalogo)) { throw "Falta '$Catalogo' (hoja 'Nodos NI', columna 'Nombre del Nodo')." }
 
 Step "Probando notificaciones"
