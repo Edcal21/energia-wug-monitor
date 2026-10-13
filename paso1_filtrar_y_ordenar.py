@@ -45,24 +45,27 @@ WUG_URLS = [
 WUG_PARAMS = {"MapViewMode": "0", "map": "4- RED ENERGIA COMERCIAL.wup"}
 BASE_DIR = Path(__file__).resolve().parent
 
+def _load_dotenv(path: Path) -> None:
+    """Carga KEY=VALUE de un .env local sin pisar variables ya definidas en el entorno."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+_load_dotenv(BASE_DIR / ".env")
+
 USERNAME = os.getenv("WUG_USER")
 PASSWORD = os.getenv("WUG_PASS")
 WUG_COOKIE = os.getenv("WUG_COOKIE", "").strip()
 if not WUG_COOKIE and (not USERNAME or not PASSWORD):
     raise ValueError("Faltan variables de entorno WUG_USER / WUG_PASS o WUG_COOKIE.")
 
-CATALOGO_FILE =( r"C:\Users\Ufinet\OneDrive - Ufinet Latam\Quality PM Service & Network Quality\Energía\Logs de energía.xlsx"
-)
 CATALOGO_SHEET = "Nodos NI"
-
-TICKETS_FILE = (
-    r"C:\Users\Ufinet\OneDrive - Ufinet Latam\Quality PM Service & Network Quality\Energía\TICKETS DE ENERGIA DESDE OCT 2025.xlsx"
-)
-OUT_FILE = (
-    r"C:\Users\Ufinet\OneDrive - Ufinet Latam\Quality PM Service & Network Quality\Energía\logs_energia_procesados.xlsx"
-)
-
-# Fuerza rutas relativas a la carpeta del script para que no dependan del usuario de Windows.
 CATALOGO_FILE = str(BASE_DIR / "Logs de energía.xlsx")
 TICKETS_FILE = str(BASE_DIR / "TICKETS DE ENERGIA DESDE OCT 2025.xlsx")
 OUT_FILE = str(BASE_DIR / "logs_energia_procesados.xlsx")
