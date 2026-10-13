@@ -12,12 +12,14 @@
   Ejecutar desde PowerShell *como Administrador* en la carpeta del proyecto:
     .\deploy.ps1
     .\deploy.ps1 -IntervalSec 300 -TaskName "MonitorEnergiaWUG"
+    .\deploy.ps1 -SinAlertas   # registra la tarea sin canal de alertas (solo genera el Excel)
     .\deploy.ps1 -Uninstall
 #>
 [CmdletBinding()]
 param(
     [string]$TaskName = "MonitorEnergiaWUG",
     [int]$IntervalSec = 300,
+    [switch]$SinAlertas,
     [switch]$Uninstall
 )
 
@@ -72,14 +74,18 @@ $hasAuth = ($envText -match '(?m)^WUG_COOKIE=\S') -or
 if (-not $hasAuth) { throw ".env sin credenciales WUG (WUG_USER+WUG_PASS o WUG_COOKIE)." }
 $hasTelegram = ($envText -match '(?m)^TELEGRAM_BOT_TOKEN=\S') -and ($envText -match '(?m)^TELEGRAM_CHAT_ID=\S')
 $hasTeams    = ($envText -match '(?m)^TEAMS_WEBHOOK_URL=\S')
-if (-not ($hasTelegram -or $hasTeams)) {
-    throw ".env sin canal de alertas (TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID o TEAMS_WEBHOOK_URL). Sin canal el monitor correria pero nunca avisaria."
+if ($SinAlertas) {
+    Write-Warning "Modo -SinAlertas: el monitor generara el Excel pero NO avisara a nadie."
+} elseif (-not ($hasTelegram -or $hasTeams)) {
+    throw ".env sin canal de alertas (TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID o TEAMS_WEBHOOK_URL). Sin canal el monitor correria pero nunca avisaria. Si es intencional, usa -SinAlertas."
 }
 if (-not (Test-Path $Catalogo)) { throw "Falta '$Catalogo' (hoja 'Nodos NI', columna 'Nombre del Nodo')." }
 
-Step "Probando notificaciones"
-& $VenvPython $Script --test-notify "Deploy monitor energia: prueba de notificacion"
-if ($LASTEXITCODE -ne 0) { throw "La prueba de notificacion fallo. Revisa .env (Telegram/Teams)." }
+if (-not $SinAlertas) {
+    Step "Probando notificaciones"
+    & $VenvPython $Script --test-notify "Deploy monitor energia: prueba de notificacion"
+    if ($LASTEXITCODE -ne 0) { throw "La prueba de notificacion fallo. Revisa .env (Telegram/Teams)." }
+}
 
 Step "Registrando tarea programada '$TaskName'"
 $action  = New-ScheduledTaskAction -Execute $VenvPython `
