@@ -142,12 +142,20 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `WUG_PASS` | vacio | Password WUG |
 | `WUG_COOKIE` | vacio | Cookie de sesion WUG |
 | `ALERT_AFTER_MIN` | `10` | Minutos antes de alertar una caida |
+| `HEARTBEAT_AFTER_MIN` | `30` | Minutos sin un ciclo exitoso antes de avisar que el monitor mismo esta ciego (`0` lo desactiva) |
+| `HEARTBEAT_REPEAT_MIN` | `120` | Cada cuantos minutos recuerda la alerta mientras siga sin funcionar |
 | `LOOP_INTERVAL_SEC` | `300` | Intervalo base del loop |
 | `EXPORT_ONLY_IF_NEW` | `1` | Evita reexportar Excel si no hay eventos nuevos |
 | `LOG_LEVEL` | `INFO` | Nivel de logs |
 | `TEAMS_WEBHOOK_URL` | vacio | URL de Power Automate |
 | `TELEGRAM_BOT_TOKEN` | vacio | Token bot Telegram |
 | `TELEGRAM_CHAT_ID` | vacio | Chat destino Telegram |
+
+## Heartbeat (el monitor vigila al monitor)
+
+Si WUG o la VPN dejan de responder, el monitor no puede ver caidas de nodos y el silencio parece "todo bien". Por eso, si pasan `HEARTBEAT_AFTER_MIN` minutos sin un ciclo exitoso, envia por el mismo canal una **ALERTA** (con el ultimo error), un recordatorio cada `HEARTBEAT_REPEAT_MIN` minutos y un aviso **RESUELTO** al recuperarse. Si el envio falla, reintenta en el siguiente ciclo.
+
+Limite: si el proceso muere o el equipo se apaga/duerme, no hay nadie que avise. Para eso hace falta un servidor siempre encendido o un monitoreo externo.
 
 ## Notas de operacion
 
