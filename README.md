@@ -142,6 +142,9 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `WUG_PASS` | vacio | Password WUG |
 | `WUG_COOKIE` | vacio | Cookie de sesion WUG |
 | `ALERT_AFTER_MIN` | `10` | Minutos antes de alertar una caida |
+| `ESCALATION_AFTER_MIN` | `60` | Minutos de caida activa antes de enviar el aviso de escalamiento (`0` lo desactiva) |
+| `ESCALATION_CONTACT` | vacio | Persona que debe dar seguimiento; aparece en el mensaje de escalamiento |
+| `WUG_URLS` | ver `.env.example` | Endpoints de WUG separados por coma (se lee del `.env`) |
 | `HEARTBEAT_AFTER_MIN` | `30` | Minutos sin un ciclo exitoso antes de avisar que el monitor mismo esta ciego (`0` lo desactiva) |
 | `HEARTBEAT_REPEAT_MIN` | `120` | Cada cuantos minutos recuerda la alerta mientras siga sin funcionar |
 | `LOOP_INTERVAL_SEC` | `300` | Intervalo base del loop |
