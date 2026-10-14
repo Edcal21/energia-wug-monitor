@@ -658,6 +658,13 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Envía una notificación de prueba (Telegram/Power Automate) y sale.",
     )
+    p.add_argument(
+        "--diagnosticar",
+        metavar="NODO",
+        type=str,
+        default="",
+        help="Solo lectura: muestra las lineas del log WUG que mencionan NODO y como las trata el filtro.",
+    )
     p.add_argument("--loop", action="store_true", help="Ejecuta el proceso en bucle infinito.")
     p.add_argument(
         "--interval-sec",
@@ -849,9 +856,55 @@ def _heartbeat_notify(msg: str | None) -> bool:
         return False
 
 
+# ================= DIAGNOSTICO =================
+def diagnosticar_nodo(nombre: str, max_lineas: int = 40) -> None:
+    """Solo lectura: no toca estado, Excel ni notificaciones."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+
+    with requests.Session() as s:
+        s.trust_env = False
+        if WUG_COOKIE:
+            s.headers["Cookie"] = WUG_COOKIE
+        else:
+            s.auth = HTTPBasicAuth(USERNAME, PASSWORD)
+        texto = fetch_filtered_log_text(s)
+
+    clave = norm_series(pd.Series([nombre])).iloc[0]
+    todas = texto.splitlines()
+    coinciden = [l.strip() for l in todas if clave in norm_series(pd.Series([l])).iloc[0]]
+    print(f"Lineas totales del log: {len(todas)} | lineas que mencionan '{nombre}': {len(coinciden)}")
+    if not coinciden:
+        print("-> WUG no devolvio ninguna linea de ese nodo: el script nunca lo ve (mapa/filtro de WUG).")
+        return
+
+    for linea in coinciden[-max_lineas:]:
+        print("-" * 70)
+        print(linea)
+        if not is_up_down_line(linea):
+            print("   [DESCARTADA] no es una linea UP/DOWN/SVCUP/SVCDOWN")
+            continue
+        d = parse_up_down(pd.DataFrame({"raw": [linea]}))
+        if d.empty:
+            print("   [DESCARTADA] no coincide con el formato esperado")
+            continue
+        cand = d.iloc[0]["candidato"]
+        if len(cand) < 3:
+            print(f"   [DESCARTADA] no se pudo extraer el nombre del nodo (candidato='{cand}')")
+        elif is_basura_candidato(cand):
+            palabra = next(k for k in BASURA_KEYWORDS if k in norm_text(cand))
+            print(f"   [DESCARTADA] filtro de basura: candidato='{cand}' contiene '{palabra}'")
+        else:
+            print(f"   [OK] {d.iloc[0]['estado']} {d.iloc[0]['datetime']} nodo='{cand}'")
+
+
 # ================= MAIN =================
 def main() -> int:
     args = _parse_args()
+
+    if args.diagnosticar:
+        diagnosticar_nodo(args.diagnosticar)
+        return 0
 
     if args.test_notify:
         notify(args.test_notify)

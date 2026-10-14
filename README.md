@@ -160,6 +160,14 @@ Si WUG o la VPN dejan de responder, el monitor no puede ver caidas de nodos y el
 
 Limite: si el proceso muere o el equipo se apaga/duerme, no hay nadie que avise. Para eso hace falta un servidor siempre encendido o un monitoreo externo.
 
+## Diagnostico: "no sono la alarma de un nodo"
+
+Solo lectura (no toca estado, Excel ni envia nada). Muestra las lineas del log de WUG que mencionan el nodo y si el filtro las descarta o las acepta:
+
+```powershell
+python .\paso1_filtrar_y_ordenar.py --diagnosticar tipitapa
+```
+
 ## Notas de operacion
 
 - Si `estado_alertas.json` queda con una caida abierta que ya fue resuelta fuera del rango de logs, puede ser necesario revisarlo manualmente.
