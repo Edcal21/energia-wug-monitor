@@ -465,20 +465,38 @@ def notify(text: str) -> None:
 
 
 # ================= ESTADO =================
-def _load_state() -> dict[str, Any]:
-    if STATE_FILE.exists():
-        try:
-            s = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            s.setdefault("last_seen_datetime", None)
-            s.setdefault("open_down", {})
-            return s
-        except Exception:
-            return {"last_seen_datetime": None, "open_down": {}}
+def _empty_state() -> dict[str, Any]:
     return {"last_seen_datetime": None, "open_down": {}}
 
 
+def _load_state() -> dict[str, Any]:
+    if not STATE_FILE.exists():
+        return _empty_state()
+    try:
+        s = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(s, dict):
+            raise ValueError("el estado no es un objeto JSON")
+        s.setdefault("last_seen_datetime", None)
+        s.setdefault("open_down", {})
+        return s
+    except Exception as e:
+        # Estado ilegible: guardar copia para poder revisarlo y avisar en el log,
+        # en vez de volver a baseline en silencio y perder las caidas abiertas.
+        backup = STATE_FILE.with_name(f"{STATE_FILE.name}.corrupto-{time_module.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            STATE_FILE.replace(backup)
+            logger.error("Estado ilegible (%s). Copia guardada en %s; se reinicia el baseline.", e, backup)
+        except OSError:
+            logger.error("Estado ilegible (%s) y no se pudo respaldar; se reinicia el baseline.", e)
+        return _empty_state()
+
+
 def _save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Escritura atomica: se escribe a un temporal y se reemplaza, asi un corte de
+    # energia a mitad de escritura nunca deja el JSON truncado.
+    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, STATE_FILE)
 
 
 def _parse_state_ts(x: Any) -> pd.Timestamp | None:
