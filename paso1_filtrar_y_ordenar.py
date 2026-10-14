@@ -37,11 +37,6 @@ DEFAULT_WUG_URLS = [
     "http://monitoreo.alliance.com.ni:8022/map.asp",
     "http://whatsup.alliance.com.ni:8022/map.asp",
 ]
-WUG_URLS = [
-    u.strip()
-    for u in os.getenv("WUG_URLS", ",".join(DEFAULT_WUG_URLS)).split(",")
-    if u.strip()
-]
 WUG_PARAMS = {"MapViewMode": "0", "map": "4- RED ENERGIA COMERCIAL.wup"}
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -58,6 +53,12 @@ def _load_dotenv(path: Path) -> None:
 
 
 _load_dotenv(BASE_DIR / ".env")
+
+WUG_URLS = [
+    u.strip()
+    for u in os.getenv("WUG_URLS", ",".join(DEFAULT_WUG_URLS)).split(",")
+    if u.strip()
+]
 
 USERNAME = os.getenv("WUG_USER")
 PASSWORD = os.getenv("WUG_PASS")
@@ -85,6 +86,10 @@ PA_EXTRA_FIELDS_RAW = os.getenv("PA_EXTRA_FIELDS", "").strip()  # JSON string: {
 PA_RAISE_ON_ERROR = os.getenv("PA_RAISE_ON_ERROR", "1").strip() in {"1", "true", "True", "yes", "YES"}
 
 ALERT_AFTER_MIN = int(os.getenv("ALERT_AFTER_MIN", "10"))
+
+# ======= Escalamiento: segundo aviso si la caida sigue activa (0 = desactivado) =======
+ESCALATION_AFTER_MIN = int(os.getenv("ESCALATION_AFTER_MIN", "60"))
+ESCALATION_CONTACT = os.getenv("ESCALATION_CONTACT", "").strip()
 
 # ======= Heartbeat: avisa si el monitor mismo deja de funcionar (0 = desactivado) =======
 HEARTBEAT_AFTER_MIN = float(os.getenv("HEARTBEAT_AFTER_MIN", "30"))
@@ -516,6 +521,8 @@ def update_alerts_incremental(
             continue
 
         if estado == "DOWN":
+            if nodo in open_down:
+                continue  # DOWN repetido: no reiniciar la caida ni volver a alarmar
             open_down[nodo] = {
                 "down_dt": str(dt),
                 "notified": False,
@@ -543,13 +550,12 @@ def update_alerts_incremental(
 
     now = pd.Timestamp.now()
     for nodo, info in list(open_down.items()):
-        if info.get("notified"):
-            continue
         down_dt = pd.to_datetime(info.get("down_dt"), errors="coerce")
         if pd.isna(down_dt):
             continue
         mins = (now - down_dt).total_seconds() / 60.0
-        if mins >= ALERT_AFTER_MIN:
+
+        if mins >= ALERT_AFTER_MIN and not info.get("notified"):
             mins_r = round(mins, 1)
             msg = (
                 f"⚠️ ALARMA Energía (DOWN > {ALERT_AFTER_MIN} min)\n"
@@ -561,6 +567,20 @@ def update_alerts_incremental(
             )
             notify(msg)
             info["notified"] = True
+            open_down[nodo] = info
+
+        if ESCALATION_AFTER_MIN > 0 and mins >= ESCALATION_AFTER_MIN and not info.get("escalated_60"):
+            seguimiento = f" de {ESCALATION_CONTACT}" if ESCALATION_CONTACT else ""
+            msg = (
+                f"[ESCALAMIENTO {ESCALATION_AFTER_MIN} MIN] Energia\n"
+                f"Nodo: {nodo}\n"
+                f"IP: {info.get('ip', '')}\n"
+                f"Desde: {down_dt}\n"
+                f"Duracion: {round(mins, 1)} min\n"
+                f"La caida sigue activa. Requiere seguimiento{seguimiento}."
+            )
+            notify(msg)
+            info["escalated_60"] = True
             open_down[nodo] = info
 
     if not df_new.empty:
