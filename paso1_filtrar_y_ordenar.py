@@ -498,7 +498,15 @@ def _save_state(state: dict[str, Any]) -> None:
     # energia a mitad de escritura nunca deja el JSON truncado.
     tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STATE_FILE)
+    # En Windows un antivirus o indexador puede tener el archivo abierto un instante: reintentar.
+    for intento in range(5):
+        try:
+            os.replace(tmp, STATE_FILE)
+            return
+        except PermissionError:
+            if intento == 4:
+                raise
+            time_module.sleep(0.5)
 
 
 def _parse_state_ts(x: Any) -> pd.Timestamp | None:
