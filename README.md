@@ -7,7 +7,7 @@ Script Python para procesar eventos `UP/DOWN` desde WhatsUp Gold/WUG, normalizar
 - Consulta el mapa de energia en WUG.
 - Filtra lineas `UP`, `DOWN`, `SVCUP` y `SVCDOWN`.
 - Normaliza nombres de nodos y aplica aliases conocidos.
-- Cruza los eventos contra `Logs de energia.xlsx`, hoja `Nodos NI`.
+- Cruza los eventos contra `Logs de energía.xlsx`, hoja `Nodos NI`.
 - Genera `logs_energia_procesados.xlsx` con las hojas `eventos_up_down` y `Detalle`.
 - Mantiene estado incremental en `estado_alertas.json` para no repetir alertas.
 - Envia alarma cuando un nodo lleva mas de `ALERT_AFTER_MIN` minutos abajo.
@@ -18,7 +18,7 @@ Script Python para procesar eventos `UP/DOWN` desde WhatsUp Gold/WUG, normalizar
 El script busca estos archivos en la misma carpeta:
 
 - `paso1_filtrar_y_ordenar.py`
-- `Logs de energia.xlsx`
+- `Logs de energía.xlsx`
 - `TICKETS DE ENERGIA DESDE OCT 2025.xlsx` *(actualmente esta definido en el script, pero no se usa)*
 
 El proceso genera:
@@ -30,6 +30,18 @@ El proceso genera:
 Por seguridad, los Excel, Power BI, logs y estado local estan ignorados por Git en `.gitignore`.
 
 ## Paso a paso para implementar
+
+## Despliegue rapido (Windows)
+
+Desde PowerShell **como Administrador** en la carpeta del proyecto:
+
+```powershell
+.\deploy.ps1
+```
+
+La primera vez crea `.venv`, instala dependencias y genera `.env`; llena las credenciales y vuelve a ejecutarlo. En la segunda corrida valida configuracion y catalogo, envia una notificacion de prueba y registra la tarea programada `MonitorEnergiaWUG` (inicia con el equipo, reinicia si falla). Para quitarla: `.\deploy.ps1 -Uninstall`.
+
+Los pasos manuales siguen abajo por si prefieres hacerlo a mano.
 
 ### 1. Instalar Python
 
@@ -60,7 +72,7 @@ pip install -r requirements.txt
 
 Coloca en la misma carpeta del script:
 
-- `Logs de energia.xlsx`
+- `Logs de energía.xlsx`
 - `TICKETS DE ENERGIA DESDE OCT 2025.xlsx`, si se decide usarlo mas adelante.
 
 La hoja del catalogo debe llamarse `Nodos NI` y debe contener la columna `Nombre del Nodo`.
@@ -130,12 +142,20 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `WUG_PASS` | vacio | Password WUG |
 | `WUG_COOKIE` | vacio | Cookie de sesion WUG |
 | `ALERT_AFTER_MIN` | `10` | Minutos antes de alertar una caida |
+| `HEARTBEAT_AFTER_MIN` | `30` | Minutos sin un ciclo exitoso antes de avisar que el monitor mismo esta ciego (`0` lo desactiva) |
+| `HEARTBEAT_REPEAT_MIN` | `120` | Cada cuantos minutos recuerda la alerta mientras siga sin funcionar |
 | `LOOP_INTERVAL_SEC` | `300` | Intervalo base del loop |
 | `EXPORT_ONLY_IF_NEW` | `1` | Evita reexportar Excel si no hay eventos nuevos |
 | `LOG_LEVEL` | `INFO` | Nivel de logs |
 | `TEAMS_WEBHOOK_URL` | vacio | URL de Power Automate |
 | `TELEGRAM_BOT_TOKEN` | vacio | Token bot Telegram |
 | `TELEGRAM_CHAT_ID` | vacio | Chat destino Telegram |
+
+## Heartbeat (el monitor vigila al monitor)
+
+Si WUG o la VPN dejan de responder, el monitor no puede ver caidas de nodos y el silencio parece "todo bien". Por eso, si pasan `HEARTBEAT_AFTER_MIN` minutos sin un ciclo exitoso, envia por el mismo canal una **ALERTA** (con el ultimo error), un recordatorio cada `HEARTBEAT_REPEAT_MIN` minutos y un aviso **RESUELTO** al recuperarse. Si el envio falla, reintenta en el siguiente ciclo.
+
+Limite: si el proceso muere o el equipo se apaga/duerme, no hay nadie que avise. Para eso hace falta un servidor siempre encendido o un monitoreo externo.
 
 ## Notas de operacion
 

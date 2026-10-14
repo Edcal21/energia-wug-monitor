@@ -45,24 +45,27 @@ WUG_URLS = [
 WUG_PARAMS = {"MapViewMode": "0", "map": "4- RED ENERGIA COMERCIAL.wup"}
 BASE_DIR = Path(__file__).resolve().parent
 
+def _load_dotenv(path: Path) -> None:
+    """Carga KEY=VALUE de un .env local sin pisar variables ya definidas en el entorno."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+_load_dotenv(BASE_DIR / ".env")
+
 USERNAME = os.getenv("WUG_USER")
 PASSWORD = os.getenv("WUG_PASS")
 WUG_COOKIE = os.getenv("WUG_COOKIE", "").strip()
 if not WUG_COOKIE and (not USERNAME or not PASSWORD):
     raise ValueError("Faltan variables de entorno WUG_USER / WUG_PASS o WUG_COOKIE.")
 
-CATALOGO_FILE =( r"C:\Users\Ufinet\OneDrive - Ufinet Latam\Quality PM Service & Network Quality\Energía\Logs de energía.xlsx"
-)
 CATALOGO_SHEET = "Nodos NI"
-
-TICKETS_FILE = (
-    r"C:\Users\Ufinet\OneDrive - Ufinet Latam\Quality PM Service & Network Quality\Energía\TICKETS DE ENERGIA DESDE OCT 2025.xlsx"
-)
-OUT_FILE = (
-    r"C:\Users\Ufinet\OneDrive - Ufinet Latam\Quality PM Service & Network Quality\Energía\logs_energia_procesados.xlsx"
-)
-
-# Fuerza rutas relativas a la carpeta del script para que no dependan del usuario de Windows.
 CATALOGO_FILE = str(BASE_DIR / "Logs de energía.xlsx")
 TICKETS_FILE = str(BASE_DIR / "TICKETS DE ENERGIA DESDE OCT 2025.xlsx")
 OUT_FILE = str(BASE_DIR / "logs_energia_procesados.xlsx")
@@ -82,6 +85,10 @@ PA_EXTRA_FIELDS_RAW = os.getenv("PA_EXTRA_FIELDS", "").strip()  # JSON string: {
 PA_RAISE_ON_ERROR = os.getenv("PA_RAISE_ON_ERROR", "1").strip() in {"1", "true", "True", "yes", "YES"}
 
 ALERT_AFTER_MIN = int(os.getenv("ALERT_AFTER_MIN", "10"))
+
+# ======= Heartbeat: avisa si el monitor mismo deja de funcionar (0 = desactivado) =======
+HEARTBEAT_AFTER_MIN = float(os.getenv("HEARTBEAT_AFTER_MIN", "30"))
+HEARTBEAT_REPEAT_MIN = float(os.getenv("HEARTBEAT_REPEAT_MIN", "120"))
 
 STATE_FILE = Path(os.getenv("ENERGIA_ALERT_STATE", str(BASE_DIR / "estado_alertas.json")))
 EXPORT_ONLY_IF_NEW = os.getenv("EXPORT_ONLY_IF_NEW", "1").strip() in {"1", "true", "True", "yes", "YES"}
@@ -745,6 +752,65 @@ def run_once() -> RunSummary:
     )
 
 
+# ================= HEARTBEAT =================
+class Heartbeat:
+    """Avisa si el propio monitor lleva demasiado tiempo sin completar un ciclo con exito.
+
+    Sin esto, una caida de WUG/VPN deja al monitor ciego y el silencio parece "todo bien".
+    Un aviso al superar `after_min`, recordatorio cada `repeat_min` y aviso al recuperarse.
+    after_min <= 0 lo desactiva.
+    """
+
+    def __init__(self, after_min: float, repeat_min: float, now: float) -> None:
+        self.after_sec = after_min * 60
+        self.repeat_sec = repeat_min * 60
+        self.last_ok = now
+        self.last_alert: float | None = None
+
+    @staticmethod
+    def _fmt(sec: float) -> str:
+        return f"{int(sec // 60)} min"
+
+    def ok(self, now: float) -> str | None:
+        msg = None
+        if self.last_alert is not None:
+            msg = (
+                "RESUELTO: el monitor de energia volvio a completar ciclos "
+                f"(estuvo {self._fmt(now - self.last_ok)} sin datos)."
+            )
+        self.last_ok = now
+        self.last_alert = None
+        return msg
+
+    def failed(self, now: float, error: str) -> str | None:
+        if self.after_sec <= 0:
+            return None
+        down = now - self.last_ok
+        if down < self.after_sec:
+            return None
+        if self.last_alert is not None and now - self.last_alert < self.repeat_sec:
+            return None
+        self.last_alert = now
+        return (
+            f"ALERTA: el monitor de energia lleva {self._fmt(down)} sin completar un ciclo. "
+            "NO se estan vigilando las caidas de nodos. "
+            f"Ultimo error: {error[:300]}"
+        )
+
+
+def _heartbeat_notify(msg: str | None) -> bool:
+    """Envia el aviso. True si se envio (o no habia nada que enviar), False si fallo."""
+    if not msg:
+        return True
+    logger.warning("Heartbeat: %s", msg)
+    try:
+        notify(msg)
+        return True
+    except Exception:
+        logger.exception("No se pudo enviar el aviso de heartbeat")
+        return False
+
+
 # ================= MAIN =================
 def main() -> int:
     args = _parse_args()
@@ -759,6 +825,7 @@ def main() -> int:
 
     if args.loop:
         logger.info("Modo bucle activo. Intervalo base: %s seg. Ctrl+C para detener.", args.interval_sec)
+        heartbeat = Heartbeat(HEARTBEAT_AFTER_MIN, HEARTBEAT_REPEAT_MIN, time_module.time())
         try:
             while True:
                 started_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -773,8 +840,12 @@ def main() -> int:
                         summary.open_down_total,
                         summary.exported,
                     )
-                except Exception:
+                    _heartbeat_notify(heartbeat.ok(time_module.time()))
+                except Exception as exc:
                     logger.exception("Error en ciclo")
+                    alert = heartbeat.failed(time_module.time(), f"{type(exc).__name__}: {exc}")
+                    if not _heartbeat_notify(alert):
+                        heartbeat.last_alert = None  # no se envio: reintentar en el siguiente ciclo
 
                 state = _load_state()
                 sleep_sec = compute_dynamic_interval(args.interval_sec, state)
