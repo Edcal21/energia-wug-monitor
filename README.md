@@ -147,6 +147,7 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `WUG_URLS` | ver `.env.example` | Endpoints de WUG separados por coma (se lee del `.env`) |
 | `HEARTBEAT_AFTER_MIN` | `30` | Minutos sin un ciclo exitoso antes de avisar que el monitor mismo esta ciego (`0` lo desactiva) |
 | `HEARTBEAT_REPEAT_MIN` | `120` | Cada cuantos minutos recuerda la alerta mientras siga sin funcionar |
+| `BASELINE_MAX_AGE_HOURS` | `24` | Al arrancar sin `estado_alertas.json`, las caidas en curso (ultimo evento DOWN) de las ultimas N horas se registran y alarman; las mas viejas se ignoran |
 | `LOOP_INTERVAL_SEC` | `300` | Intervalo base del loop |
 | `EXPORT_ONLY_IF_NEW` | `1` | Evita reexportar Excel si no hay eventos nuevos |
 | `LOG_LEVEL` | `INFO` | Nivel de logs |

@@ -90,6 +90,8 @@ ALERT_AFTER_MIN = int(os.getenv("ALERT_AFTER_MIN", "10"))
 # ======= Escalamiento: segundo aviso si la caida sigue activa (0 = desactivado) =======
 ESCALATION_AFTER_MIN = int(os.getenv("ESCALATION_AFTER_MIN", "60"))
 ESCALATION_CONTACT = os.getenv("ESCALATION_CONTACT", "").strip()
+# Al arrancar sin estado, las caidas en curso con DOWN mas reciente que esto se siguen alertando.
+BASELINE_MAX_AGE_HOURS = float(os.getenv("BASELINE_MAX_AGE_HOURS", "24"))
 
 # ======= Heartbeat: avisa si el monitor mismo deja de funcionar (0 = desactivado) =======
 HEARTBEAT_AFTER_MIN = float(os.getenv("HEARTBEAT_AFTER_MIN", "30"))
@@ -508,13 +510,36 @@ def _parse_state_ts(x: Any) -> pd.Timestamp | None:
     return ts
 
 
+def _seed_open_down(df: pd.DataFrame, now: pd.Timestamp) -> dict[str, Any]:
+    """Caidas aun abiertas segun el log: nodos cuyo ultimo evento es DOWN y fue hace <= BASELINE_MAX_AGE_HOURS."""
+    seeded: dict[str, Any] = {}
+    max_age = pd.Timedelta(hours=BASELINE_MAX_AGE_HOURS)
+    for nodo, g in df.sort_values("datetime").groupby("nodo"):
+        if str(g.iloc[-1]["estado"]).upper() != "DOWN":
+            continue
+        ups = g[g["estado"].astype(str).str.upper() == "UP"]
+        tramo = g if ups.empty else g[g["datetime"] > ups["datetime"].max()]
+        first_down = tramo.iloc[0]  # primer DOWN de la racha final (DOWN repetidos no reinician la caida)
+        down_dt = pd.to_datetime(first_down["datetime"])
+        if now - down_dt > max_age:
+            continue
+        seeded[str(nodo)] = {
+            "down_dt": str(down_dt),
+            "notified": False,
+            "ip": str(first_down.get("ip") or ""),
+            "raw_down": str(first_down.get("raw") or ""),
+        }
+    return seeded
+
+
 def update_alerts_incremental(
     df_events_full: pd.DataFrame, state: dict[str, Any]
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     """
     - ALERTA DOWN: solo si dura >= ALERT_AFTER_MIN (1 sola vez por caída)
     - RESTABLECIDO: solo si esa caída ya había sido notificada (notified=True)
-    - baseline (primera vez): no notifica nada, setea last_seen y limpia open_down
+    - baseline (sin estado): setea last_seen y registra como abiertas las caidas en curso
+      (ultimo evento DOWN de las ultimas BASELINE_MAX_AGE_HOURS h); esas si alarman normal
     """
     df = df_events_full.dropna(subset=["nodo", "estado", "datetime"]).copy()
     if df.empty:
@@ -523,13 +548,13 @@ def update_alerts_incremental(
     last_seen = _parse_state_ts(state.get("last_seen_datetime"))
     if last_seen is None:
         state["last_seen_datetime"] = str(df["datetime"].max())
-        state["open_down"] = {}
-        return state, df.iloc[0:0]
-
-    df_new = df[df["datetime"] > last_seen].copy()
-    df_new = df_new.sort_values(["datetime", "nodo"]).reset_index(drop=True)
-
-    open_down: dict[str, Any] = state.get("open_down", {})
+        open_down: dict[str, Any] = _seed_open_down(df, pd.Timestamp.now())
+        df_new = df.iloc[0:0].copy()
+        logger.info("Baseline sin estado previo: %s caida(s) en curso registradas.", len(open_down))
+    else:
+        df_new = df[df["datetime"] > last_seen].copy()
+        df_new = df_new.sort_values(["datetime", "nodo"]).reset_index(drop=True)
+        open_down = state.get("open_down", {})
 
     for _, r in df_new.iterrows():
         nodo = str(r["nodo"])
