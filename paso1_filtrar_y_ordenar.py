@@ -878,12 +878,20 @@ def diagnosticar_nodo(nombre: str, max_lineas: int = 40) -> None:
         print("-> WUG no devolvio ninguna linea de ese nodo: el script nunca lo ve (mapa/filtro de WUG).")
         return
 
-    for linea in coinciden[-max_lineas:]:
+    # El log de WUG puede venir ordenado de nuevo a viejo (o al reves): ordenar por fecha y hora.
+    def _clave(linea: str) -> str:
+        return " ".join(linea.split()[:2])
+
+    coinciden.sort(key=_clave, reverse=True)
+    eventos = [l for l in coinciden if is_up_down_line(l)]
+    otras = len(coinciden) - len(eventos)
+    print(f"Eventos UP/DOWN: {len(eventos)} | otras lineas (alertas fallidas, etc.): {otras}")
+    print(f"Rango de fechas de las lineas del nodo: {_clave(coinciden[-1])} -> {_clave(coinciden[0])}")
+    print(f"Se muestran los {min(max_lineas, len(eventos))} eventos UP/DOWN mas recientes:")
+
+    for linea in eventos[:max_lineas]:
         print("-" * 70)
         print(linea)
-        if not is_up_down_line(linea):
-            print("   [DESCARTADA] no es una linea UP/DOWN/SVCUP/SVCDOWN")
-            continue
         d = parse_up_down(pd.DataFrame({"raw": [linea]}))
         if d.empty:
             print("   [DESCARTADA] no coincide con el formato esperado")
