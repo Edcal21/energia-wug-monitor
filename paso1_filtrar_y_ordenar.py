@@ -90,6 +90,8 @@ ALERT_AFTER_MIN = int(os.getenv("ALERT_AFTER_MIN", "10"))
 # ======= Escalamiento: segundo aviso si la caida sigue activa (0 = desactivado) =======
 ESCALATION_AFTER_MIN = int(os.getenv("ESCALATION_AFTER_MIN", "60"))
 ESCALATION_CONTACT = os.getenv("ESCALATION_CONTACT", "").strip()
+# Al arrancar sin estado, las caidas en curso con DOWN mas reciente que esto se siguen alertando.
+BASELINE_MAX_AGE_HOURS = float(os.getenv("BASELINE_MAX_AGE_HOURS", "24"))
 
 # ======= Heartbeat: avisa si el monitor mismo deja de funcionar (0 = desactivado) =======
 HEARTBEAT_AFTER_MIN = float(os.getenv("HEARTBEAT_AFTER_MIN", "30"))
@@ -465,20 +467,46 @@ def notify(text: str) -> None:
 
 
 # ================= ESTADO =================
-def _load_state() -> dict[str, Any]:
-    if STATE_FILE.exists():
-        try:
-            s = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            s.setdefault("last_seen_datetime", None)
-            s.setdefault("open_down", {})
-            return s
-        except Exception:
-            return {"last_seen_datetime": None, "open_down": {}}
+def _empty_state() -> dict[str, Any]:
     return {"last_seen_datetime": None, "open_down": {}}
 
 
+def _load_state() -> dict[str, Any]:
+    if not STATE_FILE.exists():
+        return _empty_state()
+    try:
+        s = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(s, dict):
+            raise ValueError("el estado no es un objeto JSON")
+        s.setdefault("last_seen_datetime", None)
+        s.setdefault("open_down", {})
+        return s
+    except Exception as e:
+        # Estado ilegible: guardar copia para poder revisarlo y avisar en el log,
+        # en vez de volver a baseline en silencio y perder las caidas abiertas.
+        backup = STATE_FILE.with_name(f"{STATE_FILE.name}.corrupto-{time_module.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            STATE_FILE.replace(backup)
+            logger.error("Estado ilegible (%s). Copia guardada en %s; se reinicia el baseline.", e, backup)
+        except OSError:
+            logger.error("Estado ilegible (%s) y no se pudo respaldar; se reinicia el baseline.", e)
+        return _empty_state()
+
+
 def _save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Escritura atomica: se escribe a un temporal y se reemplaza, asi un corte de
+    # energia a mitad de escritura nunca deja el JSON truncado.
+    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    # En Windows un antivirus o indexador puede tener el archivo abierto un instante: reintentar.
+    for intento in range(5):
+        try:
+            os.replace(tmp, STATE_FILE)
+            return
+        except PermissionError:
+            if intento == 4:
+                raise
+            time_module.sleep(0.5)
 
 
 def _parse_state_ts(x: Any) -> pd.Timestamp | None:
@@ -490,13 +518,36 @@ def _parse_state_ts(x: Any) -> pd.Timestamp | None:
     return ts
 
 
+def _seed_open_down(df: pd.DataFrame, now: pd.Timestamp) -> dict[str, Any]:
+    """Caidas aun abiertas segun el log: nodos cuyo ultimo evento es DOWN y fue hace <= BASELINE_MAX_AGE_HOURS."""
+    seeded: dict[str, Any] = {}
+    max_age = pd.Timedelta(hours=BASELINE_MAX_AGE_HOURS)
+    for nodo, g in df.sort_values("datetime").groupby("nodo"):
+        if str(g.iloc[-1]["estado"]).upper() != "DOWN":
+            continue
+        ups = g[g["estado"].astype(str).str.upper() == "UP"]
+        tramo = g if ups.empty else g[g["datetime"] > ups["datetime"].max()]
+        first_down = tramo.iloc[0]  # primer DOWN de la racha final (DOWN repetidos no reinician la caida)
+        down_dt = pd.to_datetime(first_down["datetime"])
+        if now - down_dt > max_age:
+            continue
+        seeded[str(nodo)] = {
+            "down_dt": str(down_dt),
+            "notified": False,
+            "ip": str(first_down.get("ip") or ""),
+            "raw_down": str(first_down.get("raw") or ""),
+        }
+    return seeded
+
+
 def update_alerts_incremental(
     df_events_full: pd.DataFrame, state: dict[str, Any]
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     """
     - ALERTA DOWN: solo si dura >= ALERT_AFTER_MIN (1 sola vez por caída)
     - RESTABLECIDO: solo si esa caída ya había sido notificada (notified=True)
-    - baseline (primera vez): no notifica nada, setea last_seen y limpia open_down
+    - baseline (sin estado): setea last_seen y registra como abiertas las caidas en curso
+      (ultimo evento DOWN de las ultimas BASELINE_MAX_AGE_HOURS h); esas si alarman normal
     """
     df = df_events_full.dropna(subset=["nodo", "estado", "datetime"]).copy()
     if df.empty:
@@ -505,13 +556,13 @@ def update_alerts_incremental(
     last_seen = _parse_state_ts(state.get("last_seen_datetime"))
     if last_seen is None:
         state["last_seen_datetime"] = str(df["datetime"].max())
-        state["open_down"] = {}
-        return state, df.iloc[0:0]
-
-    df_new = df[df["datetime"] > last_seen].copy()
-    df_new = df_new.sort_values(["datetime", "nodo"]).reset_index(drop=True)
-
-    open_down: dict[str, Any] = state.get("open_down", {})
+        open_down: dict[str, Any] = _seed_open_down(df, pd.Timestamp.now())
+        df_new = df.iloc[0:0].copy()
+        logger.info("Baseline sin estado previo: %s caida(s) en curso registradas.", len(open_down))
+    else:
+        df_new = df[df["datetime"] > last_seen].copy()
+        df_new = df_new.sort_values(["datetime", "nodo"]).reset_index(drop=True)
+        open_down = state.get("open_down", {})
 
     for _, r in df_new.iterrows():
         nodo = str(r["nodo"])
@@ -639,6 +690,13 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Envía una notificación de prueba (Telegram/Power Automate) y sale.",
+    )
+    p.add_argument(
+        "--diagnosticar",
+        metavar="NODO",
+        type=str,
+        default="",
+        help="Solo lectura: muestra las lineas del log WUG que mencionan NODO y como las trata el filtro.",
     )
     p.add_argument("--loop", action="store_true", help="Ejecuta el proceso en bucle infinito.")
     p.add_argument(
@@ -831,9 +889,63 @@ def _heartbeat_notify(msg: str | None) -> bool:
         return False
 
 
+# ================= DIAGNOSTICO =================
+def diagnosticar_nodo(nombre: str, max_lineas: int = 40) -> None:
+    """Solo lectura: no toca estado, Excel ni notificaciones."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+
+    with requests.Session() as s:
+        s.trust_env = False
+        if WUG_COOKIE:
+            s.headers["Cookie"] = WUG_COOKIE
+        else:
+            s.auth = HTTPBasicAuth(USERNAME, PASSWORD)
+        texto = fetch_filtered_log_text(s)
+
+    clave = norm_series(pd.Series([nombre])).iloc[0]
+    todas = texto.splitlines()
+    coinciden = [l.strip() for l in todas if clave in norm_series(pd.Series([l])).iloc[0]]
+    print(f"Lineas totales del log: {len(todas)} | lineas que mencionan '{nombre}': {len(coinciden)}")
+    if not coinciden:
+        print("-> WUG no devolvio ninguna linea de ese nodo: el script nunca lo ve (mapa/filtro de WUG).")
+        return
+
+    # El log de WUG puede venir ordenado de nuevo a viejo (o al reves): ordenar por fecha y hora.
+    def _clave(linea: str) -> str:
+        return " ".join(linea.split()[:2])
+
+    coinciden.sort(key=_clave, reverse=True)
+    eventos = [l for l in coinciden if is_up_down_line(l)]
+    otras = len(coinciden) - len(eventos)
+    print(f"Eventos UP/DOWN: {len(eventos)} | otras lineas (alertas fallidas, etc.): {otras}")
+    print(f"Rango de fechas de las lineas del nodo: {_clave(coinciden[-1])} -> {_clave(coinciden[0])}")
+    print(f"Se muestran los {min(max_lineas, len(eventos))} eventos UP/DOWN mas recientes:")
+
+    for linea in eventos[:max_lineas]:
+        print("-" * 70)
+        print(linea)
+        d = parse_up_down(pd.DataFrame({"raw": [linea]}))
+        if d.empty:
+            print("   [DESCARTADA] no coincide con el formato esperado")
+            continue
+        cand = d.iloc[0]["candidato"]
+        if len(cand) < 3:
+            print(f"   [DESCARTADA] no se pudo extraer el nombre del nodo (candidato='{cand}')")
+        elif is_basura_candidato(cand):
+            palabra = next(k for k in BASURA_KEYWORDS if k in norm_text(cand))
+            print(f"   [DESCARTADA] filtro de basura: candidato='{cand}' contiene '{palabra}'")
+        else:
+            print(f"   [OK] {d.iloc[0]['estado']} {d.iloc[0]['datetime']} nodo='{cand}'")
+
+
 # ================= MAIN =================
 def main() -> int:
     args = _parse_args()
+
+    if args.diagnosticar:
+        diagnosticar_nodo(args.diagnosticar)
+        return 0
 
     if args.test_notify:
         notify(args.test_notify)

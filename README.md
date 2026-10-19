@@ -147,6 +147,7 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `WUG_URLS` | ver `.env.example` | Endpoints de WUG separados por coma (se lee del `.env`) |
 | `HEARTBEAT_AFTER_MIN` | `30` | Minutos sin un ciclo exitoso antes de avisar que el monitor mismo esta ciego (`0` lo desactiva) |
 | `HEARTBEAT_REPEAT_MIN` | `120` | Cada cuantos minutos recuerda la alerta mientras siga sin funcionar |
+| `BASELINE_MAX_AGE_HOURS` | `24` | Al arrancar sin `estado_alertas.json`, las caidas en curso (ultimo evento DOWN) de las ultimas N horas se registran y alarman; las mas viejas se ignoran |
 | `LOOP_INTERVAL_SEC` | `300` | Intervalo base del loop |
 | `EXPORT_ONLY_IF_NEW` | `1` | Evita reexportar Excel si no hay eventos nuevos |
 | `LOG_LEVEL` | `INFO` | Nivel de logs |
@@ -159,6 +160,14 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 Si WUG o la VPN dejan de responder, el monitor no puede ver caidas de nodos y el silencio parece "todo bien". Por eso, si pasan `HEARTBEAT_AFTER_MIN` minutos sin un ciclo exitoso, envia por el mismo canal una **ALERTA** (con el ultimo error), un recordatorio cada `HEARTBEAT_REPEAT_MIN` minutos y un aviso **RESUELTO** al recuperarse. Si el envio falla, reintenta en el siguiente ciclo.
 
 Limite: si el proceso muere o el equipo se apaga/duerme, no hay nadie que avise. Para eso hace falta un servidor siempre encendido o un monitoreo externo.
+
+## Diagnostico: "no sono la alarma de un nodo"
+
+Solo lectura (no toca estado, Excel ni envia nada). Muestra las lineas del log de WUG que mencionan el nodo y si el filtro las descarta o las acepta:
+
+```powershell
+python .\paso1_filtrar_y_ordenar.py --diagnosticar tipitapa
+```
 
 ## Notas de operacion
 
