@@ -752,11 +752,14 @@ def update_alerts_incremental(
       (ultimo evento DOWN de las ultimas BASELINE_MAX_AGE_HOURS h); esas si alarman normal
     """
     df = df_events_full.dropna(subset=["nodo", "estado", "datetime"]).copy()
-    if df.empty:
-        return state, df.iloc[0:0]
-
     last_seen = _parse_state_ts(state.get("last_seen_datetime"))
-    if last_seen is None:
+    if df.empty:
+        # Sin eventos en el log: aun asi hay que evaluar las caidas ya abiertas (alarma, plan, escalamiento).
+        df_new = df.iloc[0:0].copy()
+        open_down = state.get("open_down", {})
+        if not open_down:
+            return state, df_new
+    elif last_seen is None:
         state["last_seen_datetime"] = str(df["datetime"].max())
         open_down: dict[str, Any] = _seed_open_down(df, pd.Timestamp.now())
         df_new = df.iloc[0:0].copy()
@@ -934,6 +937,21 @@ class RunSummary:
 
 
 # ================= RUN ONCE =================
+def _ciclo_sin_eventos() -> "RunSummary":
+    """WUG respondio pero sin lineas UP/DOWN utiles: no es un error, pero se avisa en el log y se siguen evaluando las caidas abiertas."""
+    logger.warning("WUG no devolvio lineas UP/DOWN validas; se evaluan solo las caidas ya abiertas.")
+    state = _load_state()
+    vacio = pd.DataFrame(columns=["nodo", "estado", "datetime"])
+    state, _ = update_alerts_incremental(vacio, state, get_plan())
+    _save_state(state)
+    return RunSummary(
+        events_total=0,
+        new_events=0,
+        open_down_total=len((state.get("open_down") or {}).keys()),
+        exported=False,
+    )
+
+
 def run_once() -> RunSummary:
     cat = load_catalogo_excel(CATALOGO_FILE, CATALOGO_SHEET)
 
@@ -961,10 +979,16 @@ def run_once() -> RunSummary:
     raw = pd.DataFrame({"raw": lineas})
     logger.info("Lineas UP/DOWN candidatas: %s", len(raw))
 
+    if raw.empty:
+        return _ciclo_sin_eventos()
+
     df = parse_up_down(raw)
     df = df[df["candidato"].str.len().ge(3)].copy()
     df = df[~df["candidato"].apply(is_basura_candidato)].copy()
     logger.info("Logs UP/DOWN con nodo válidos: %s", len(df))
+
+    if df.empty:
+        return _ciclo_sin_eventos()
 
     alias_keys = pd.Series(list(ALIAS_MAP_RAW.keys()))
     alias_norm = clean_key_series(alias_keys)
