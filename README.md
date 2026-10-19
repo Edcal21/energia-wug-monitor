@@ -145,6 +145,8 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `ESCALATION_AFTER_MIN` | `60` | Minutos de caida activa antes de enviar el aviso de escalamiento (`0` lo desactiva) |
 | `ESCALATION_CONTACT` | vacio | Persona que debe dar seguimiento; aparece en el mensaje de escalamiento |
 | `WUG_URLS` | ver `.env.example` | Endpoints de WUG separados por coma (se lee del `.env`) |
+| `PLAN_ENTRADA_AFTER_MIN` | `0` | Minutos de caida antes del aviso de entrada del plan de autonomia (subir si hay muchos parpadeos) |
+| `PLAN_AUTONOMIA_FILE` | `datos/plan_autonomia.csv` | CSV de autonomia y movilizacion por nodo |
 | `HEARTBEAT_AFTER_MIN` | `30` | Minutos sin un ciclo exitoso antes de avisar que el monitor mismo esta ciego (`0` lo desactiva) |
 | `HEARTBEAT_REPEAT_MIN` | `120` | Cada cuantos minutos recuerda la alerta mientras siga sin funcionar |
 | `BASELINE_MAX_AGE_HOURS` | `24` | Al arrancar sin `estado_alertas.json`, las caidas en curso (ultimo evento DOWN) de las ultimas N horas se registran y alarman; las mas viejas se ignoran |
@@ -154,6 +156,29 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `TEAMS_WEBHOOK_URL` | vacio | URL de Power Automate |
 | `TELEGRAM_BOT_TOKEN` | vacio | Token bot Telegram |
 | `TELEGRAM_CHAT_ID` | vacio | Chat destino Telegram |
+
+## Plan de autonomia (hora limite por nodo)
+
+`datos/plan_autonomia.csv` guarda, por nodo, la **autonomia** de baterias/generador y el **tiempo de movilizacion** de la cuadrilla desde su base (ambos en horas; viene del Excel `Energia_Plan_Mundial.xlsx`, sin coordenadas). Con eso, para cada caida:
+
+```
+hora limite = hora de caida + autonomia - movilizacion
+```
+
+- **Aviso de entrada** (al detectar la caida): cuanto tiempo queda para normalizar o mover la cuadrilla, la hora limite y la hora estimada de apagado. Si el nodo tiene acceso restringido (p. ej. solo diurno) lo indica.
+- **Aviso de hora limite**: si llega esa hora y el nodo no ha levantado, envia "MUEVE LA CUADRILLA YA o se apaga el nodo".
+- Si autonomia <= movilizacion, o el monitor se entera tarde, sale un solo aviso urgente en vez de los dos.
+- Cada aviso sale una vez por caida (se guarda en `estado_alertas.json`). Se suman a la alarma de 10 min y al escalamiento de 60 min, no los reemplazan.
+
+Los nodos se cruzan por **nombre normalizado** (sin tildes ni mayusculas). Columnas del CSV: `nodo, sector, autonomia_hrs, movilizacion_hrs, acceso, alias_wug`. Si el nombre en WUG/catalogo no coincide, pon el nombre alterno en `alias_wug` (varios separados por `|`). El CSV se recarga solo al editarlo.
+
+Para ver que nodos no hacen match (en ambos sentidos), sin red ni notificaciones:
+
+```powershell
+python .\paso1_filtrar_y_ordenar.py --verificar-plan
+```
+
+Un nodo que cae y no esta en el plan queda registrado como WARNING en el log y no genera aviso de hora limite.
 
 ## Heartbeat (el monitor vigila al monitor)
 

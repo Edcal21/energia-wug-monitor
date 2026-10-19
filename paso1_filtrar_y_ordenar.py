@@ -93,6 +93,11 @@ ESCALATION_CONTACT = os.getenv("ESCALATION_CONTACT", "").strip()
 # Al arrancar sin estado, las caidas en curso con DOWN mas reciente que esto se siguen alertando.
 BASELINE_MAX_AGE_HOURS = float(os.getenv("BASELINE_MAX_AGE_HOURS", "24"))
 
+# ======= Plan de autonomia: hora limite = caida + autonomia - movilizacion de la cuadrilla =======
+PLAN_FILE = Path(os.getenv("PLAN_AUTONOMIA_FILE", str(BASE_DIR / "datos" / "plan_autonomia.csv")))
+# Minutos de caida antes del aviso de entrada (0 = al detectar la caida; subir si hay muchos parpadeos).
+PLAN_ENTRADA_AFTER_MIN = float(os.getenv("PLAN_ENTRADA_AFTER_MIN", "0"))
+
 # ======= Heartbeat: avisa si el monitor mismo deja de funcionar (0 = desactivado) =======
 HEARTBEAT_AFTER_MIN = float(os.getenv("HEARTBEAT_AFTER_MIN", "30"))
 HEARTBEAT_REPEAT_MIN = float(os.getenv("HEARTBEAT_REPEAT_MIN", "120"))
@@ -466,6 +471,196 @@ def notify(text: str) -> None:
                 raise
 
 
+# ================= PLAN DE AUTONOMIA =================
+def _strip_parens(key: str) -> str:
+    return re.sub(r"\s*\(.*?\)\s*", " ", key).strip()
+
+
+def _key(name: Any) -> str:
+    return clean_key_series(pd.Series([str(name)])).iloc[0]
+
+
+@dataclass
+class PlanNodo:
+    nodo: str
+    autonomia_hrs: float
+    movilizacion_hrs: float
+    acceso: str = ""
+
+
+class PlanAutonomia:
+    """Autonomia y tiempo de movilizacion por nodo, cruzados por nombre normalizado.
+
+    Orden de busqueda: nombre exacto o alias_wug -> nombre sin parentesis (solo si es unico).
+    """
+
+    def __init__(self, df: pd.DataFrame):
+        self.items: list[PlanNodo] = []
+        self.exact: dict[str, PlanNodo] = {}
+        loose: dict[str, list[PlanNodo]] = {}
+        for _, r in df.iterrows():
+            item = PlanNodo(
+                nodo=str(r["nodo"]).strip(),
+                autonomia_hrs=float(r["autonomia_hrs"]),
+                movilizacion_hrs=float(r["movilizacion_hrs"]),
+                acceso=str(r.get("acceso") or "").strip(),
+            )
+            self.items.append(item)
+            names = [item.nodo] + [a for a in str(r.get("alias_wug") or "").split("|") if a.strip()]
+            for n in names:
+                self.exact[_key(n)] = item
+            loose.setdefault(_strip_parens(_key(item.nodo)), []).append(item)
+        self.loose = {k: v[0] for k, v in loose.items() if len(v) == 1}
+        self.ambiguos = {k: [i.nodo for i in v] for k, v in loose.items() if len(v) > 1}
+
+    def buscar(self, nodo: str) -> PlanNodo | None:
+        k = _key(nodo)
+        return self.exact.get(k) or self.loose.get(_strip_parens(k))
+
+
+def load_plan(path: Path = PLAN_FILE) -> PlanAutonomia | None:
+    """Carga el CSV del plan. Si falta o es invalido, el aviso de hora limite queda desactivado (con ERROR en el log)."""
+    if not path.is_file():
+        logger.warning("Plan de autonomia no encontrado (%s): avisos de hora limite desactivados.", path)
+        return None
+    try:
+        df = pd.read_csv(path, encoding="utf-8-sig", dtype={"acceso": str, "alias_wug": str})
+        faltan = {"nodo", "autonomia_hrs", "movilizacion_hrs"} - set(df.columns)
+        if faltan:
+            raise ValueError(f"faltan columnas {sorted(faltan)}")
+        df = df.dropna(subset=["nodo", "autonomia_hrs", "movilizacion_hrs"])
+        for c in ("autonomia_hrs", "movilizacion_hrs"):
+            df[c] = pd.to_numeric(df[c], errors="raise")
+        df = df.fillna({"acceso": "", "alias_wug": ""})
+        return PlanAutonomia(df)
+    except Exception:
+        logger.exception("Plan de autonomia ilegible (%s): avisos de hora limite desactivados.", path)
+        return None
+
+
+_NUNCA = object()
+_PLAN_CACHE: dict[str, Any] = {"mtime": _NUNCA, "plan": None}
+
+
+def get_plan() -> PlanAutonomia | None:
+    """Plan en cache; se recarga solo si cambia el CSV (editarlo no requiere reiniciar y evita repetir el warning)."""
+    try:
+        mtime = PLAN_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    if mtime != _PLAN_CACHE["mtime"]:
+        _PLAN_CACHE.update(mtime=mtime, plan=load_plan(PLAN_FILE))
+    return _PLAN_CACHE["plan"]
+
+
+def _fmt_dt(ts: Any) -> str:
+    return pd.to_datetime(ts).strftime("%d/%m %H:%M")
+
+
+def _fmt_dur(minutos: float) -> str:
+    m = int(round(abs(minutos)))
+    h, mm = divmod(m, 60)
+    return f"{h} h {mm:02d} min" if h else f"{mm} min"
+
+
+def _plan_info(info: dict[str, Any], nodo: str, down_dt: pd.Timestamp, plan: PlanAutonomia | None) -> bool:
+    """Guarda en la caida su hora limite (una sola vez). False si el nodo no esta en el plan."""
+    if info.get("limite_dt"):
+        return True
+    p = plan.buscar(nodo) if plan else None
+    if p is None:
+        return False
+    info["autonomia_hrs"] = p.autonomia_hrs
+    info["movilizacion_hrs"] = p.movilizacion_hrs
+    info["acceso"] = p.acceso
+    info["apagado_dt"] = str(down_dt + pd.Timedelta(hours=p.autonomia_hrs))
+    info["limite_dt"] = str(down_dt + pd.Timedelta(hours=p.autonomia_hrs - p.movilizacion_hrs))
+    return True
+
+
+def _acceso_linea(info: dict[str, Any]) -> str:
+    acc = str(info.get("acceso") or "")
+    return f"Acceso: {acc}\n" if acc and acc.strip().lower() != "24/7" else ""
+
+
+def avisos_plan(nodo: str, info: dict[str, Any], down_dt: pd.Timestamp, now: pd.Timestamp, plan: PlanAutonomia | None) -> None:
+    """Aviso de entrada (cuanto tiempo hay) y aviso de hora limite vencida. Cada uno sale una sola vez por caida."""
+    if plan is None or not _plan_info(info, nodo, down_dt, plan):
+        if plan is not None and not info.get("plan_sin_dato"):
+            logger.warning("Nodo sin dato en el plan de autonomia: %s (no hay aviso de hora limite).", nodo)
+            info["plan_sin_dato"] = True
+        return
+
+    limite = pd.to_datetime(info["limite_dt"])
+    apagado = pd.to_datetime(info["apagado_dt"])
+    restante_min = (limite - now).total_seconds() / 60.0
+    base = (
+        f"Nodo: {nodo}\n"
+        f"Caida: {_fmt_dt(down_dt)}\n"
+        f"Autonomia: {_fmt_dur(info['autonomia_hrs'] * 60)} | Movilizacion: {_fmt_dur(info['movilizacion_hrs'] * 60)}\n"
+        f"{_acceso_linea(info)}"
+    )
+
+    if not info.get("plan_entrada"):
+        if (now - down_dt).total_seconds() / 60.0 < PLAN_ENTRADA_AFTER_MIN:
+            return
+        if restante_min > 0:
+            msg = (
+                f"[PLAN AUTONOMIA] Caida de nodo\n{base}"
+                f"Tiempo para normalizar o mover la cuadrilla: {_fmt_dur(restante_min)}\n"
+                f"Hora limite: {_fmt_dt(limite)}\n"
+                f"Sin energia el nodo se apaga a las {_fmt_dt(apagado)}."
+            )
+            notify(msg)
+            info["plan_entrada"] = True
+            return
+        # Ya no hay margen (autonomia <= movilizacion, o el monitor se enteró tarde): un solo aviso urgente.
+        msg = (
+            f"[PLAN AUTONOMIA] MUEVE LA CUADRILLA YA o se apaga el nodo\n{base}"
+            f"La hora limite era {_fmt_dt(limite)} (hace {_fmt_dur(restante_min)}).\n"
+            f"Apagado estimado: {_fmt_dt(apagado)}."
+        )
+        notify(msg)
+        info["plan_entrada"] = True
+        info["plan_limite"] = True
+        return
+
+    if not info.get("plan_limite") and restante_min <= 0:
+        msg = (
+            f"[PLAN AUTONOMIA] MUEVE LA CUADRILLA YA o se apaga el nodo\n{base}"
+            f"Se cumplio la hora limite ({_fmt_dt(limite)}) y el nodo sigue caido.\n"
+            f"Apagado estimado: {_fmt_dt(apagado)} (en {_fmt_dur((apagado - now).total_seconds() / 60.0)})."
+        )
+        notify(msg)
+        info["plan_limite"] = True
+
+
+def verificar_plan(plan: PlanAutonomia | None) -> int:
+    """Solo lectura: cruza el plan contra el catalogo y reporta nodos sin match en ambos sentidos."""
+    if plan is None:
+        print("No se pudo cargar el plan (ver log).")
+        return 1
+    cat = load_catalogo_excel(CATALOGO_FILE, CATALOGO_SHEET)
+    nombres = sorted(set(cat["nodo_catalogo"]))
+    en_plan, sin_plan = [], []
+    for n in nombres:
+        (en_plan if plan.buscar(n) else sin_plan).append(n)
+    usados = {id(plan.buscar(n)) for n in nombres if plan.buscar(n)}
+    plan_sin_nodo = [i.nodo for i in plan.items if id(i) not in usados]
+    print(f"Plan: {len(plan.items)} nodos | Catalogo: {len(nombres)} nodos | con match: {len(en_plan)}")
+    print(f"\nNodos del catalogo SIN dato en el plan ({len(sin_plan)}) -> no tendran aviso de hora limite:")
+    for n in sin_plan:
+        print(f"  - {n}")
+    print(f"\nNodos del plan que NO aparecen en el catalogo ({len(plan_sin_nodo)}) -> revisar nombre o llenar alias_wug:")
+    for n in plan_sin_nodo:
+        print(f"  - {n}")
+    if plan.ambiguos:
+        print("\nNombres ambiguos en el plan (varios sitios con el mismo nombre base; usa el nombre completo o alias_wug):")
+        for k, v in plan.ambiguos.items():
+            print(f"  - {k}: {v}")
+    return 0
+
+
 # ================= ESTADO =================
 def _empty_state() -> dict[str, Any]:
     return {"last_seen_datetime": None, "open_down": {}}
@@ -541,7 +736,7 @@ def _seed_open_down(df: pd.DataFrame, now: pd.Timestamp) -> dict[str, Any]:
 
 
 def update_alerts_incremental(
-    df_events_full: pd.DataFrame, state: dict[str, Any]
+    df_events_full: pd.DataFrame, state: dict[str, Any], plan: PlanAutonomia | None = None
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     """
     - ALERTA DOWN: solo si dura >= ALERT_AFTER_MIN (1 sola vez por caída)
@@ -605,6 +800,9 @@ def update_alerts_incremental(
         if pd.isna(down_dt):
             continue
         mins = (now - down_dt).total_seconds() / 60.0
+
+        avisos_plan(nodo, info, down_dt, now, plan)
+        open_down[nodo] = info
 
         if mins >= ALERT_AFTER_MIN and not info.get("notified"):
             mins_r = round(mins, 1)
@@ -672,6 +870,13 @@ def compute_dynamic_interval(base_interval_sec: int, state: dict[str, Any]) -> i
             has_prealert = True
             break
 
+        limite = pd.to_datetime(info.get("limite_dt"), errors="coerce")
+        if pd.notna(limite) and not info.get("plan_limite"):
+            # Hora limite a punto de cumplirse: revisar mas seguido para que el aviso no llegue tarde.
+            if (limite - now).total_seconds() / 60.0 <= DYN_INTERVAL_PREALERT_WINDOW_MIN:
+                has_prealert = True
+                break
+
     if has_prealert:
         return max(DYN_INTERVAL_MIN_SEC, min(base_interval_sec, DYN_INTERVAL_PREALERT_SEC))
 
@@ -697,6 +902,11 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Solo lectura: muestra las lineas del log WUG que mencionan NODO y como las trata el filtro.",
+    )
+    p.add_argument(
+        "--verificar-plan",
+        action="store_true",
+        help="Solo lectura: cruza el plan de autonomia contra el catalogo y lista los nodos sin match.",
     )
     p.add_argument("--loop", action="store_true", help="Ejecuta el proceso en bucle infinito.")
     p.add_argument(
@@ -768,7 +978,7 @@ def run_once() -> RunSummary:
     df.loc[df["nodo_catalogo"].isna(), "tipo_nodo"] = "OTRO"
 
     state = _load_state()
-    state, df_new = update_alerts_incremental(df, state)
+    state, df_new = update_alerts_incremental(df, state, get_plan())
     _save_state(state)
 
     open_down_total = len((state.get("open_down") or {}).keys())
@@ -946,6 +1156,9 @@ def main() -> int:
     if args.diagnosticar:
         diagnosticar_nodo(args.diagnosticar)
         return 0
+
+    if args.verificar_plan:
+        return verificar_plan(get_plan())
 
     if args.test_notify:
         notify(args.test_notify)
