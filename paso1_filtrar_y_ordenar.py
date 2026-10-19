@@ -980,6 +980,13 @@ def run_once() -> RunSummary:
     logger.info("Lineas UP/DOWN candidatas: %s", len(raw))
 
     if raw.empty:
+        # Guardar lo que respondio WUG para poder ver si es una vista vacia, un login o un cambio de formato.
+        volcado = BASE_DIR / "wug_respuesta_vacia.txt"
+        try:
+            volcado.write_text(texto[:200_000], encoding="utf-8")
+            logger.warning("Respuesta de WUG sin lineas UP/DOWN (%s caracteres) guardada en %s", len(texto), volcado)
+        except OSError:
+            logger.exception("No pude guardar la respuesta vacia de WUG en %s", volcado)
         return _ciclo_sin_eventos()
 
     df = parse_up_down(raw)
