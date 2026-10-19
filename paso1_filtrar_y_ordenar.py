@@ -528,7 +528,8 @@ def load_plan(path: Path = PLAN_FILE) -> PlanAutonomia | None:
         faltan = {"nodo", "autonomia_hrs", "movilizacion_hrs"} - set(df.columns)
         if faltan:
             raise ValueError(f"faltan columnas {sorted(faltan)}")
-        df = df.dropna(subset=["nodo", "autonomia_hrs", "movilizacion_hrs"])
+        df = df.dropna(subset=["nodo", "autonomia_hrs"])
+        df["movilizacion_hrs"] = df["movilizacion_hrs"].fillna(0)  # vacio solo tiene sentido con autonomia 0
         for c in ("autonomia_hrs", "movilizacion_hrs"):
             df[c] = pd.to_numeric(df[c], errors="raise")
         df = df.fillna({"acceso": "", "alias_wug": ""})
@@ -603,6 +604,12 @@ def avisos_plan(nodo: str, info: dict[str, Any], down_dt: pd.Timestamp, now: pd.
 
     if not info.get("plan_entrada"):
         if (now - down_dt).total_seconds() / 60.0 < PLAN_ENTRADA_AFTER_MIN:
+            return
+        if info["autonomia_hrs"] <= 0:
+            # Nodo sin autonomia: no hay tiempo que calcular, la cuadrilla sale desde la caida.
+            notify(f"[PLAN AUTONOMIA] MUEVE LA CUADRILLA YA: nodo sin autonomia\nNodo: {nodo}\nCaida: {_fmt_dt(down_dt)}\n{_acceso_linea(info)}Se apaga con la caida de energia; la cuadrilla debe salir desde la hora de caida.")
+            info["plan_entrada"] = True
+            info["plan_limite"] = True
             return
         if restante_min > 0:
             msg = (
