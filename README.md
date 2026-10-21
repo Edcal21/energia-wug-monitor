@@ -182,7 +182,7 @@ Un nodo que cae y no esta en el plan queda registrado como WARNING en el log y n
 
 ## Heartbeat (el monitor vigila al monitor)
 
-Si WUG o la VPN dejan de responder, el monitor no puede ver caidas de nodos y el silencio parece "todo bien". Por eso, si pasan `HEARTBEAT_AFTER_MIN` minutos sin un ciclo exitoso, envia por el mismo canal una **ALERTA** (con el ultimo error), un recordatorio cada `HEARTBEAT_REPEAT_MIN` minutos y un aviso **RESUELTO** al recuperarse. Si el envio falla, reintenta en el siguiente ciclo.
+Si WUG o la VPN dejan de responder, el monitor no puede ver caidas de nodos y el silencio parece "todo bien". Por eso, si pasan `HEARTBEAT_AFTER_MIN` minutos sin un ciclo exitoso, envia por el mismo canal una **ALERTA** (con el ultimo error), un recordatorio cada `HEARTBEAT_REPEAT_MIN` minutos y un aviso **RESUELTO** al recuperarse. Si el envio falla, reintenta en el siguiente ciclo. Un ciclo en que WUG responde pero **sin ninguna linea UP/DOWN** (servidor WUG caido o vista rota) tambien cuenta como fallido, y la respuesta se guarda en `wug_respuesta_vacia.txt` para revisarla.
 
 Limite: si el proceso muere o el equipo se apaga/duerme, no hay nadie que avise. Para eso hace falta un servidor siempre encendido o un monitoreo externo.
 

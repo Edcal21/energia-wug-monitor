@@ -1223,7 +1223,17 @@ def main() -> int:
                         summary.open_down_total,
                         summary.exported,
                     )
-                    _heartbeat_notify(heartbeat.ok(time_module.time()))
+                    if summary.events_total == 0:
+                        # WUG responde pero sin una sola linea UP/DOWN: casi siempre es el servidor WUG caido o
+                        # una vista rota, no "sin novedades". Cuenta como ciclo fallido para el heartbeat.
+                        alert = heartbeat.failed(
+                            time_module.time(),
+                            "WUG respondio sin lineas UP/DOWN (servidor WUG caido o vista vacia)",
+                        )
+                        if not _heartbeat_notify(alert):
+                            heartbeat.last_alert = None
+                    else:
+                        _heartbeat_notify(heartbeat.ok(time_module.time()))
                 except Exception as exc:
                     logger.exception("Error en ciclo")
                     alert = heartbeat.failed(time_module.time(), f"{type(exc).__name__}: {exc}")
