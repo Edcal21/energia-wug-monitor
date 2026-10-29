@@ -321,6 +321,13 @@ def _get_with_retries(
             time_module.sleep(sleep_sec)
 
 
+def _check_log_access(text: str, url: str) -> str:
+    """WUG responde HTTP 200 con una pagina 'Error: Unauthorized Access' cuando el usuario no tiene permiso sobre el log."""
+    if "Unauthorized Access" in text:
+        raise PermissionError(f"WUG respondio 'Unauthorized Access' en la vista de log: el usuario no tiene permiso ({url})")
+    return text
+
+
 def fetch_filtered_log_text(session: requests.Session) -> str:
     errors: list[str] = []
 
@@ -334,7 +341,7 @@ def fetch_filtered_log_text(session: requests.Session) -> str:
                 filtered_url = urljoin(wug_url, href)
                 r1 = _get_with_retries(session, filtered_url, context=f"vista filtrada [{wug_url}]")
                 logger.info("Endpoint WUG autenticado correctamente: %s", wug_url)
-                return r1.text
+                return _check_log_access(r1.text, filtered_url)
 
             fallback_url = _to_logview_url(wug_url)
             params = dict(WUG_PARAMS)
@@ -346,10 +353,10 @@ def fetch_filtered_log_text(session: requests.Session) -> str:
                 context=f"fallback ViewMapFilter=true [{fallback_url}]",
             )
             logger.info("Endpoint WUG autenticado correctamente: %s", wug_url)
-            return r1.text
+            return _check_log_access(r1.text, fallback_url)
         except PermissionError as exc:
             logger.warning("Credenciales rechazadas en %s: %s", wug_url, exc)
-            errors.append(f"{wug_url}: 401 Unauthorized")
+            errors.append(f"{wug_url}: {exc}")
         except Exception as exc:
             logger.warning("Fallo consultando %s: %s", wug_url, exc)
             errors.append(f"{wug_url}: {exc}")
