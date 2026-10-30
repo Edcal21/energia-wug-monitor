@@ -921,6 +921,11 @@ def _parse_args() -> argparse.Namespace:
         help="Solo lectura: muestra las lineas del log WUG que mencionan NODO y como las trata el filtro.",
     )
     p.add_argument(
+        "--cambiar-credenciales",
+        action="store_true",
+        help="Pide por consola el usuario y la contrasena de WUG y los guarda en el .env (apto para SSH).",
+    )
+    p.add_argument(
         "--verificar-plan",
         action="store_true",
         help="Solo lectura: cruza el plan de autonomia contra el catalogo y lista los nodos sin match.",
@@ -1194,6 +1199,57 @@ def diagnosticar_nodo(nombre: str, max_lineas: int = 40) -> None:
             print(f"   [OK] {d.iloc[0]['estado']} {d.iloc[0]['datetime']} nodo='{cand}'")
 
 
+# ================= CREDENCIALES =================
+def cambiar_credenciales(path: Path | None = None) -> int:
+    """Pide usuario y contrasena de WUG por consola (la contrasena no se muestra) y los escribe en el .env.
+
+    Sirve para hacerlo por SSH, sin editor grafico. Se reescribe el archivo en el mismo lugar (no se
+    reemplaza por uno nuevo) para conservar los permisos restringidos del .env, y se deja WUG_COOKIE vacia
+    porque la cookie tiene prioridad sobre usuario/contrasena.
+    """
+    import getpass
+
+    path = path or (BASE_DIR / ".env")
+    if not path.is_file():
+        print(f"No existe {path}. Primero ejecuta deploy.ps1 para crearlo.")
+        return 1
+
+    user = input("Usuario nuevo de WUG: ").strip()
+    pw = getpass.getpass("Contrasena nueva de WUG (no se muestra al escribir): ")
+    pw2 = getpass.getpass("Repite la contrasena: ")
+    if not user or not pw:
+        print("El usuario y la contrasena no pueden estar vacios. No se cambio nada.")
+        return 1
+    if pw != pw2:
+        print("Las contrasenas no coinciden. No se cambio nada.")
+        return 1
+    if "\n" in user + pw or "\r" in user + pw:
+        print("El usuario y la contrasena no pueden tener saltos de linea. No se cambio nada.")
+        return 1
+    if pw != pw.strip() or pw[0] in "\"'" or pw[-1] in "\"'":
+        # El loader del .env recorta espacios y comillas en los extremos del valor.
+        print("La contrasena empieza o termina con espacio o comilla, y el monitor la leeria mal. No se cambio nada.")
+        return 1
+
+    nuevos = {"WUG_USER": user, "WUG_PASS": pw, "WUG_COOKIE": ""}
+    pendientes = dict(nuevos)
+    salida: list[str] = []
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        clave = raw.strip().partition("=")[0].strip()
+        if "=" in raw and clave in pendientes and not raw.lstrip().startswith("#"):
+            salida.append(f"{clave}={pendientes.pop(clave)}")
+        else:
+            salida.append(raw)
+    for clave, valor in pendientes.items():
+        salida.append(f"{clave}={valor}")
+
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("\r\n".join(salida) + "\r\n")
+    print(f"Listo: usuario '{user}' guardado en {path} (WUG_COOKIE quedo vacia).")
+    print("Reinicia la tarea para que lo use: schtasks /End /TN MonitorEnergiaWUG y luego schtasks /Run /TN MonitorEnergiaWUG")
+    return 0
+
+
 # ================= MAIN =================
 def main() -> int:
     args = _parse_args()
@@ -1201,6 +1257,9 @@ def main() -> int:
     if args.diagnosticar:
         diagnosticar_nodo(args.diagnosticar)
         return 0
+
+    if args.cambiar_credenciales:
+        return cambiar_credenciales()
 
     if args.verificar_plan:
         return verificar_plan(get_plan())

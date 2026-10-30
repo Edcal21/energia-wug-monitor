@@ -157,6 +157,16 @@ Configura la tarea para iniciar con Windows o con el usuario operativo.
 | `TELEGRAM_BOT_TOKEN` | vacio | Token bot Telegram |
 | `TELEGRAM_CHAT_ID` | vacio | Chat destino Telegram |
 
+## Cambiar las credenciales de WUG (apto para SSH)
+
+Sin editor grafico y sin escribir la contrasena en un comando (no queda en el historial ni se ve en pantalla):
+
+```
+.venv\Scripts\python.exe paso1_filtrar_y_ordenar.py --cambiar-credenciales
+```
+
+Pide el usuario, la contrasena (dos veces, sin mostrarla) y actualiza `WUG_USER` y `WUG_PASS` en el `.env`, dejando `WUG_COOKIE` vacia y el resto del archivo intacto. Despues reinicia la tarea: `schtasks /End /TN MonitorEnergiaWUG` y `schtasks /Run /TN MonitorEnergiaWUG`. Rechaza contrasenas vacias, distintas entre si o que empiecen/terminen con espacio o comilla (el monitor las leeria mal).
+
 ## Plan de autonomia (hora limite por nodo)
 
 `datos/plan_autonomia.csv` guarda, por nodo, la **autonomia** de baterias/generador y el **tiempo de movilizacion** de la cuadrilla desde su base (ambos en horas; viene del Excel `Energia_Plan_Mundial.xlsx`, sin coordenadas). Con eso, para cada caida:
